@@ -56,6 +56,7 @@ def decode_samples(
     model_name: str = "large-v3",
     best_of: int | None = 1,
     sample_len: int | None = None,
+    length_penalty: float | None = None,
     suppress_blank: bool = False,
     suppress_tokens: str | list[int] | None = "-1",
     audio_duration: float = 30.0,
@@ -94,6 +95,7 @@ def decode_samples(
                 "prompt": prompt or None,
                 "prefix": prefix or None,
                 "sample_len": sample_len,
+                "length_penalty": length_penalty,
                 "suppress_blank": suppress_blank,
                 "suppress_tokens": effective_suppress_tokens,
             }
@@ -119,6 +121,7 @@ def decode_samples(
                 "prefix": prefix,
                 "best_of": best_of if temperature > 0 else None,
                 "sample_len": sample_len,
+                "length_penalty": length_penalty,
                 "suppress_blank": suppress_blank,
                 "suppress_tokens": effective_suppress_tokens,
                 "text": text,
