@@ -177,6 +177,41 @@ uv run python scripts/run_conditioning_matrix.py \
 
 `no_speech_prob` が高くても結果は破棄しません。これにより、モデルが音声なしと判断しながらどの程度の確信度でテキストを生成するかを後から調べられます。
 
+## 母音による押韻制御実験
+
+無意味なCV音声の `/a/` の量と位置を変え、認識結果のフレーズ末尾が「あ」または「ああ」になる割合を比較できます。4条件は同じ子音、タイミング、ビート、音量、decoder prompt、生成seedを共有します。
+
+| 条件 | 入力母音 |
+|---|---|
+| `balanced` | 5母音をほぼ均等に配置 |
+| `a_heavy` | 全体の70%を `/a/` にする |
+| `a_shuffled` | `a_final` と同じ母音数をランダム配置 |
+| `a_final` | 8つの各フレーズ末尾2モーラを `/a a/` にする |
+
+`a_final` と `a_shuffled` は母音のヒストグラムが完全に同じなので、両者の差は `/a/` の量ではなく配置によるものです。
+
+```bash
+uv run python scripts/run_vowel_rhyme_experiment.py \
+  --prompt-file prompts/vowel_rhyme_context.txt \
+  --prefix-file prompts/vowel_rhyme_prefix.txt \
+  --temperature 0.6 --n-samples 20 --device cpu \
+  --output results/vowel_rhyme.jsonl \
+  --summary results/vowel_rhyme_summary.json
+```
+
+JSONLには認識テキストの全母音に占める「あ」の割合、フレーズ末尾1母音・2母音のtarget一致率、フレーズ末尾同士の一致率を保存します。summaryは条件ごとの合算値です。空白もフレーズ境界として扱うため、Whisperが句読点の代わりに出す全角・半角スペースも評価に含まれます。
+
+seed 2468、temperature 0.6、各20 decodeの探索的実行では次の結果でした。
+
+| 条件 | 入力の `/a/` 率 | 出力の平均 `/a/` 率 | 語尾 `/a/` | 語尾 `/a a/` |
+|---|---:|---:|---:|---:|
+| `balanced` | 20.3% | 25.2% | 28.6% | 8.6% |
+| `a_heavy` | 70.3% | 31.2% | 35.1% | 8.1% |
+| `a_shuffled` | 43.8% | 31.8% | 28.1% | 12.5% |
+| `a_final` | 43.8% | 32.3% | 43.5% | 17.4% |
+
+同じ母音数の `a_final` と `a_shuffled` で、出力全体の `/a/` 率はほぼ同じまま、語尾 `/a/` は15.4ポイント、語尾 `/a a/` は4.9ポイント高くなりました。ただしdecode単位のペア差は語尾 `/a/` が+7.1ポイント（bootstrap 95%区間 -9.0〜+22.1）、語尾 `/a a/` が+2.6ポイント（-1.8〜+8.8）で、各20本では統計的に確定していません。母音の位置による弱い誘導信号として扱い、seedや標本数を増やして再検証する必要があります。
+
 ## 集計と可視化
 
 ```bash

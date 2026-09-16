@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from whisper_rap.metrics import aggregate_records, analyze_text, japanese_character_ratio
+from whisper_rap.metrics import (
+    aggregate_records,
+    analyze_text,
+    japanese_character_ratio,
+    moras_to_vowels,
+)
 
 
 def test_japanese_character_ratio() -> None:
@@ -13,6 +18,17 @@ def test_analyze_text_uses_jamorasep() -> None:
     assert result["moras"] == ["シャ", "ン", "プ", "ー", "ハ", "ッ", "ト"]
     assert result["mora_count"] == 7
     assert result["mora_per_second"] == 3.5
+    assert result["vowels"] == ["a", "u", "u", "a", "o"]
+
+
+def test_phrase_vowels_split_whitespace_and_punctuation() -> None:
+    result = analyze_text("未来　期待、花")
+    assert [item["last_2"] for item in result["phrase_end_vowels"]] == [
+        ["a", "i"],
+        ["a", "i"],
+        ["a", "a"],
+    ]
+    assert moras_to_vowels(["コ", "ー", "ド", "ン"]) == ["o", "o", "o"]
 
 
 def test_aggregate_records() -> None:
