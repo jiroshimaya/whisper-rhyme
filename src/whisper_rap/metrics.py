@@ -8,8 +8,16 @@ from collections.abc import Iterable
 from typing import Any
 
 JAPANESE_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff々〆ヵヶ]")
-PHRASE_SPLIT_RE = re.compile(r"[\n、。！？!?；;]+")
+PHRASE_SPLIT_RE = re.compile(r"[\s、。！？!?；;]+")
 KATAKANA_MORA_RE = re.compile(r"[ァ-ヺー]+")
+
+VOWEL_KANA = {
+    "a": set("ァアカガサザタダナハバパマャヤラヮワ"),
+    "i": set("ィイキギシジチヂニヒビピミリヰ"),
+    "u": set("ゥウクグスズツヅヌフブプムュユルヴ"),
+    "e": set("ェエケゲセゼテデネヘベペメリヱ"),
+    "o": set("ォオコゴソゾトドノホボポモョヨロヲ"),
+}
 
 
 def japanese_character_ratio(text: str) -> float:
@@ -37,6 +45,23 @@ def split_moras(reading: str) -> list[str]:
     return [str(part) for part in parsed if KATAKANA_MORA_RE.fullmatch(str(part))]
 
 
+def moras_to_vowels(moras: Iterable[str]) -> list[str]:
+    """Return the pronounced vowel of each vocalic mora; carry long marks forward."""
+    result: list[str] = []
+    for mora in moras:
+        if mora == "ー":
+            if result:
+                result.append(result[-1])
+            continue
+        vowel = next(
+            (name for char in reversed(mora) for name, chars in VOWEL_KANA.items() if char in chars),
+            None,
+        )
+        if vowel is not None:
+            result.append(vowel)
+    return result
+
+
 def analyze_text(text: str, audio_duration: float | None = None) -> dict[str, Any]:
     result: dict[str, Any] = {
         "character_count": len(text),
@@ -47,6 +72,8 @@ def analyze_text(text: str, audio_duration: float | None = None) -> dict[str, An
         moras = split_moras(reading)
         phrases = [phrase.strip() for phrase in PHRASE_SPLIT_RE.split(text) if phrase.strip()]
         phrase_moras = [split_moras(to_katakana_reading(phrase)) for phrase in phrases]
+        vowels = moras_to_vowels(moras)
+        phrase_vowels = [moras_to_vowels(items) for items in phrase_moras]
         result.update(
             {
                 "reading": reading,
@@ -56,6 +83,11 @@ def analyze_text(text: str, audio_duration: float | None = None) -> dict[str, An
                 "phrase_end_moras": [
                     {"last_1": items[-1:], "last_2": items[-2:], "last_3": items[-3:]}
                     for items in phrase_moras
+                ],
+                "vowels": vowels,
+                "phrase_end_vowels": [
+                    {"last_1": items[-1:], "last_2": items[-2:], "last_3": items[-3:]}
+                    for items in phrase_vowels
                 ],
             }
         )
