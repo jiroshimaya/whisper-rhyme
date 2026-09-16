@@ -1,0 +1,12 @@
+sample_rate: 16000
+duration: 30.0
+bpm: 90.0
+seed: 1234
+model: large-v3
+language: ja
+task: transcribe
+without_timestamps: true
+temperatures: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+n_samples: 50
+pseudo_voice_mode: cv
+best_of: 1
