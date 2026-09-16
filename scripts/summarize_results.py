@@ -34,10 +34,14 @@ def create_plots(rows: list[dict[str, Any]], output_dir: Path) -> list[str]:
         ("temperature", "character_count", "Temperature", "Mean character count"),
         ("condition", "japanese_character_ratio", "Condition", "Japanese character ratio"),
         ("condition", "mora_per_second", "Condition", "Mean mora/sec"),
+        ("acoustic_mode", "character_count", "Acoustic mode", "Mean character count"),
+        ("conditioning_mode", "character_count", "Conditioning mode", "Mean character count"),
     ]
     for group_field, metric, xlabel, ylabel in dimensions:
         grouped: dict[Any, list[float]] = defaultdict(list)
         for row in rows:
+            if row.get(group_field) is None:
+                continue
             value = row.get(metric)
             if isinstance(value, (int, float)):
                 grouped[row.get(group_field)].append(float(value))
@@ -80,14 +84,33 @@ def main() -> None:
     rows = load_records(args.path)
     by_condition: dict[str, list[dict[str, Any]]] = defaultdict(list)
     by_temperature: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    by_acoustic: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    by_conditioning: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    by_matrix_cell: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         by_condition[str(row.get("condition"))].append(row)
         by_temperature[str(row.get("temperature"))].append(row)
+        if row.get("acoustic_mode") is not None:
+            acoustic = str(row["acoustic_mode"])
+            conditioning = str(row.get("conditioning_mode"))
+            by_acoustic[acoustic].append(row)
+            by_conditioning[conditioning].append(row)
+            cell = f"{acoustic}|{conditioning}|t={row.get('temperature')}"
+            by_matrix_cell[cell].append(row)
     summary = {
         "overall": aggregate_records(rows),
         "by_condition": {key: aggregate_records(value) for key, value in sorted(by_condition.items())},
         "by_temperature": {
             key: aggregate_records(value) for key, value in sorted(by_temperature.items())
+        },
+        "by_acoustic_mode": {
+            key: aggregate_records(value) for key, value in sorted(by_acoustic.items())
+        },
+        "by_conditioning_mode": {
+            key: aggregate_records(value) for key, value in sorted(by_conditioning.items())
+        },
+        "by_matrix_cell": {
+            key: aggregate_records(value) for key, value in sorted(by_matrix_cell.items())
         },
     }
     if args.plot_dir:

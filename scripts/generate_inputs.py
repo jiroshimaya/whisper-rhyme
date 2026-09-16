@@ -15,7 +15,10 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--bpm", type=float, default=90.0)
     result.add_argument("--sample-rate", type=int, default=16_000)
     result.add_argument("--seed", type=int, default=1234)
-    result.add_argument("--voice-mode", choices=["vowel", "cv", "hum"], default="cv")
+    result.add_argument(
+        "--voice-mode", choices=["vowel", "cv", "hum", "degraded_tts"], default="cv"
+    )
+    result.add_argument("--tts-source", type=Path, help="Original local TTS WAV for degraded_tts")
     result.add_argument("--vowels", default="aiueo", help="Vowel cycle using only a/i/u/e/o")
     result.add_argument("--rhythm-file", type=Path, help="Optional mora event JSON")
     result.add_argument("--output", type=Path)
@@ -36,7 +39,9 @@ def main() -> None:
         f"generated_audio/condition_{args.condition}_seed_{args.seed}_{args.voice_mode}.wav"
     )
     events = load_mora_events(args.rhythm_file) if args.rhythm_file else None
-    metadata = save_condition(output, args.condition, config, events)
+    if args.voice_mode == "degraded_tts" and not args.tts_source:
+        raise SystemExit("--voice-mode degraded_tts requires --tts-source")
+    metadata = save_condition(output, args.condition, config, events, args.tts_source)
     print(json.dumps(metadata, ensure_ascii=False, indent=2))
 
 
