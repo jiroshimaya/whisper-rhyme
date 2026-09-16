@@ -24,6 +24,7 @@ Dの音声はCと同一です。違いはWhisper decoderに渡すオリジナル
 - `vowel`: `a/i/u/e/o` の倍音・formantを持つ母音列
 - `cv`: `ta/ka/ra/na/ma/sa/da/ba/pa` 風の、ノイズ化した子音とformant-shiftした母音
 - `hum`: 「んー／あー／うー」に近い低域寄りの曖昧な発声
+- `degraded_tts`: オリジナルの無意味仮名TTSを帯域制限・速度揺らぎ・短いdropoutで崩した発声
 
 ## セットアップ
 
@@ -111,7 +112,39 @@ uv run python scripts/run_experiment.py \
   --prompt-file prompts/rap_01.txt
 ```
 
-promptはinstructionではなく、decoderの直前文脈として渡されます。リポジトリ内の3ファイルはすべて実験用のオリジナル短文です。
+promptはinstructionではなく、decoderの直前文脈として渡されます。リポジトリ内のpromptはすべて実験用のオリジナル短文です。
+
+`--prefix-file`を併用すると、直前文脈とは別に次の出力の書き出しを条件付けできます。生成結果にはprefix自体を含まない`text`と、結合した`full_text`の両方を保存します。既定ではWhisperのnon-speech記号と言語切替tokenを抑制しますが、no-speech確率による結果の破棄は行いません。
+
+## ラップ誘導2×2×2実験
+
+ローカルVOICEVOXから著作物を含まない無意味仮名列を作り、劣化TTS入力を生成します。音声を外部配布する場合は使用したVOICEVOX話者の利用規約とクレジット条件を確認してください。
+
+```bash
+uv run python scripts/synthesize_gibberish.py \
+  --output generated_audio/gibberish_source.wav
+
+uv run python scripts/generate_inputs.py \
+  --condition C --duration 16 --bpm 90 --seed 1234 \
+  --voice-mode degraded_tts \
+  --tts-source generated_audio/gibberish_source.wav \
+  --output generated_audio/matrix_degraded_tts.wav
+```
+
+現行CVと劣化TTS、promptのみとprompt+prefix、temperature 0.6と0.8を各20回比較します。モデルは一度だけロードされ、各行は完了直後に保存されます。
+
+```bash
+uv run python scripts/run_conditioning_matrix.py \
+  --cv-audio generated_audio/matrix_cv.wav \
+  --tts-audio generated_audio/matrix_degraded_tts.wav \
+  --prompt-file prompts/rap_context.txt \
+  --prefix-file prompts/rap_prefix.txt \
+  --temperature 0.6 0.8 --n-samples 20 \
+  --device cpu \
+  --output results/conditioning_matrix.jsonl
+```
+
+中断後は同じコマンドへ`--resume`を加えます。結果には`acoustic_mode`、`conditioning_mode`、定型的ASR hallucinationの検出結果、最低限の日本語候補条件を満たす`usable_candidate`を追加します。
 
 ## 出力
 

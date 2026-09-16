@@ -24,6 +24,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--sample-len", type=int)
     result.add_argument("--seed", type=int, default=1234)
     result.add_argument("--prompt-file", type=Path)
+    result.add_argument("--prefix-file", type=Path)
     result.add_argument("--audio-file", type=Path)
     result.add_argument("--duration", type=float, default=30.0)
     result.add_argument("--bpm", type=float, default=90.0)
@@ -33,7 +34,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--suppress-blank", action="store_true")
     result.add_argument(
         "--suppress-tokens",
-        help="Whisper token IDs, comma-separated. Default is no token suppression.",
+        default="-1",
+        help="Whisper token IDs; -1 suppresses non-speech symbols, 'none' disables it.",
     )
     result.add_argument("--output", type=Path)
     return result
@@ -44,6 +46,7 @@ def main() -> None:
     if args.condition == "D" and not args.prompt_file:
         raise SystemExit("condition D requires --prompt-file")
     prompt = args.prompt_file.read_text(encoding="utf-8").strip() if args.prompt_file else None
+    prefix = args.prefix_file.read_text(encoding="utf-8").strip() if args.prefix_file else None
     temperatures = SWEEP if args.temperature_sweep else (args.temperature or [0.8])
     audio_file = args.audio_file or Path(
         f"generated_audio/condition_{args.condition}_seed_{args.seed}_{args.voice_mode}.wav"
@@ -72,11 +75,12 @@ def main() -> None:
         n_samples=args.n_samples,
         seed=args.seed,
         prompt=prompt,
+        prefix=prefix,
         model_name=args.model,
         best_of=args.best_of,
         sample_len=args.sample_len,
         suppress_blank=args.suppress_blank,
-        suppress_tokens=args.suppress_tokens,
+        suppress_tokens=[] if args.suppress_tokens.lower() == "none" else args.suppress_tokens,
         audio_duration=audio_duration,
     )
     count = write_jsonl(output, rows)

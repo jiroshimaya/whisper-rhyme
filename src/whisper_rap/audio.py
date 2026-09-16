@@ -10,10 +10,10 @@ from typing import Literal
 
 import numpy as np
 import soundfile as sf
-from scipy.signal import butter, sosfilt
+from scipy.signal import butter, resample_poly, sosfilt
 
 Condition = Literal["A", "B", "C", "D"]
-VoiceMode = Literal["vowel", "cv", "hum"]
+VoiceMode = Literal["vowel", "cv", "hum", "degraded_tts"]
 
 VOWEL_FORMANTS: dict[str, tuple[float, float, float]] = {
     "a": (800, 1200, 2500),
@@ -40,8 +40,8 @@ class AudioConfig:
     seed: int = 1234
     voice_mode: VoiceMode = "cv"
     vowels: str = "aiueo"
-    voice_gain: float = 0.72
-    beat_gain: float = 0.52
+    voice_gain: float = 0.80
+    beat_gain: float = 0.18
 
     def validate(self) -> None:
         if self.sample_rate < 8_000:
@@ -50,7 +50,7 @@ class AudioConfig:
             raise ValueError("duration must be in (0, 30]")
         if self.bpm <= 0:
             raise ValueError("bpm must be positive")
-        if self.voice_mode not in {"vowel", "cv", "hum"}:
+        if self.voice_mode not in {"vowel", "cv", "hum", "degraded_tts"}:
             raise ValueError(f"unsupported voice mode: {self.voice_mode}")
         if not self.vowels or any(v not in VOWEL_FORMANTS for v in self.vowels):
             raise ValueError("vowels must contain only a, i, u, e, o")
@@ -260,6 +260,63 @@ def generate_pseudo_voice(
     return audio, resolved
 
 
+def degrade_tts_voice(
+    source: np.ndarray,
+    source_sample_rate: int,
+    config: AudioConfig,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Make an original TTS utterance ambiguous while retaining speech-like timing."""
+    mono = np.asarray(source, dtype=np.float32)
+    if mono.ndim == 2:
+        mono = mono.mean(axis=1)
+    if source_sample_rate != config.sample_rate:
+        mono = resample_poly(mono, config.sample_rate, source_sample_rate).astype(np.float32)
+
+    # A small speed/pitch perturbation preserves phonetic transitions without clear words.
+    speed = float(rng.uniform(0.82, 1.18))
+    warped_length = max(1, round(len(mono) / speed))
+    positions = np.linspace(0, len(mono) - 1, warped_length)
+    mono = np.interp(positions, np.arange(len(mono)), mono).astype(np.float32)
+
+    block_size = round(0.075 * config.sample_rate)
+    blocks = [mono[start : start + block_size].copy() for start in range(0, len(mono), block_size)]
+    for group_start in range(0, len(blocks), 4):
+        group = blocks[group_start : group_start + 4]
+        if len(group) > 1 and rng.random() < 0.75:
+            order = rng.permutation(len(group))
+            blocks[group_start : group_start + len(group)] = [group[index] for index in order]
+    for index, block in enumerate(blocks):
+        if rng.random() < 0.32:
+            blocks[index] = block[::-1]
+    mono = np.concatenate(blocks)
+
+    mono = sosfilt(
+        butter(4, (150, rng.uniform(1_350, 1_850)), btype="bandpass", fs=config.sample_rate, output="sos"),
+        mono,
+    ).astype(np.float32)
+    time = np.arange(len(mono)) / config.sample_rate
+    flutter = 0.82 + 0.18 * np.sin(2 * np.pi * rng.uniform(3.2, 5.4) * time + rng.uniform(0, 6.28))
+    mono *= flutter.astype(np.float32)
+
+    # Brief attenuation masks lexical identity but leaves mora onsets and phrase gaps intact.
+    window = max(1, round(0.045 * config.sample_rate))
+    for start in range(0, len(mono), window):
+        if rng.random() < 0.30:
+            mono[start : start + window] *= rng.uniform(0.08, 0.35)
+    voiced_rms = max(float(np.sqrt(np.mean(mono**2))), 1e-5)
+    breath = rng.normal(0, voiced_rms * 0.75, len(mono)).astype(np.float32)
+    breath = sosfilt(
+        butter(3, 650, btype="highpass", fs=config.sample_rate, output="sos"), breath
+    ).astype(np.float32)
+    mono = mono + breath * np.clip(np.abs(mono) / (voiced_rms * 0.7), 0, 1)
+
+    target = np.zeros(round(config.duration * config.sample_rate), dtype=np.float32)
+    count = min(len(target), len(mono))
+    target[:count] = mono[:count]
+    return _normalize(target, peak=0.92)
+
+
 def _normalize(audio: np.ndarray, peak: float = 0.92) -> np.ndarray:
     current = float(np.max(np.abs(audio))) if len(audio) else 0.0
     return audio if current < 1e-8 else (audio * (peak / current)).astype(np.float32)
@@ -269,6 +326,7 @@ def generate_condition(
     condition: Condition,
     config: AudioConfig,
     rhythm_events: Sequence[MoraEvent] | None = None,
+    external_voice: tuple[np.ndarray, int] | None = None,
 ) -> tuple[np.ndarray, list[MoraEvent]]:
     """Generate one of conditions A-D. D has the same audio as C; its prompt is decoder-side."""
     condition = condition.upper()  # type: ignore[assignment]
@@ -278,7 +336,12 @@ def generate_condition(
     seed_sequence = np.random.SeedSequence(config.seed)
     beat_rng, voice_rng = [np.random.default_rng(seed) for seed in seed_sequence.spawn(2)]
     beat = generate_beat(config, beat_rng) if condition in {"A", "C", "D"} else 0.0
-    if condition in {"B", "C", "D"}:
+    if condition in {"B", "C", "D"} and config.voice_mode == "degraded_tts":
+        if external_voice is None:
+            raise ValueError("degraded_tts mode requires an external voice source")
+        voice = degrade_tts_voice(external_voice[0], external_voice[1], config, voice_rng)
+        events = []
+    elif condition in {"B", "C", "D"}:
         voice, events = generate_pseudo_voice(config, voice_rng, rhythm_events)
     else:
         voice, events = 0.0, []
@@ -291,15 +354,21 @@ def save_condition(
     condition: Condition,
     config: AudioConfig,
     rhythm_events: Sequence[MoraEvent] | None = None,
+    external_voice_path: str | Path | None = None,
 ) -> dict[str, object]:
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    audio, events = generate_condition(condition, config, rhythm_events)
+    external_voice = None
+    if external_voice_path is not None:
+        source, source_rate = sf.read(external_voice_path, dtype="float32", always_2d=False)
+        external_voice = (source, source_rate)
+    audio, events = generate_condition(condition, config, rhythm_events, external_voice)
     sf.write(output, audio, config.sample_rate, subtype="PCM_16")
     metadata: dict[str, object] = {
         "condition": condition.upper(),
         "audio_file": str(output),
         "config": asdict(config),
+        "external_voice_file": str(external_voice_path) if external_voice_path else None,
         "mora_events": [asdict(event) for event in events],
     }
     output.with_suffix(".json").write_text(

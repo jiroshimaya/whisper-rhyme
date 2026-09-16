@@ -24,4 +24,5 @@ def test_aggregate_records() -> None:
         ]
     )
     assert result["unique_output_ratio"] == 2 / 3
+    assert result["usable_candidate_ratio"] == 0.0
     assert result["top_outputs"][0] == {"text": "夜", "count": 2, "ratio": 2 / 3}

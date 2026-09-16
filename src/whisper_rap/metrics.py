@@ -71,6 +71,8 @@ def aggregate_records(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
     texts = [str(row.get("text", "")) for row in rows]
     counts = Counter(texts)
     nonempty = [row for row in rows if str(row.get("text", "")).strip()]
+    usable = [row for row in rows if row.get("usable_candidate") is True]
+    boilerplate = [row for row in rows if row.get("boilerplate")]
 
     def mean(field: str, source: list[dict[str, Any]] = rows) -> float:
         values = [row[field] for row in source if isinstance(row.get(field), (int, float))]
@@ -81,6 +83,10 @@ def aggregate_records(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "nonempty_count": len(nonempty),
         "unique_count": len(counts),
         "unique_output_ratio": len(counts) / len(rows) if rows else 0.0,
+        "usable_candidate_count": len(usable),
+        "usable_candidate_ratio": len(usable) / len(rows) if rows else 0.0,
+        "boilerplate_count": len(boilerplate),
+        "boilerplate_ratio": len(boilerplate) / len(rows) if rows else 0.0,
         "mean_character_count": mean("character_count"),
         "mean_japanese_character_ratio": mean("japanese_character_ratio"),
         "mean_mora_count": mean("mora_count"),

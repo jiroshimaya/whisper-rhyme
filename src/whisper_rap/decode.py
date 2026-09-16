@@ -52,11 +52,12 @@ def decode_samples(
     n_samples: int,
     seed: int,
     prompt: str | None,
+    prefix: str | None = None,
     model_name: str = "large-v3",
     best_of: int | None = 1,
     sample_len: int | None = None,
     suppress_blank: bool = False,
-    suppress_tokens: str | list[int] | None = None,
+    suppress_tokens: str | list[int] | None = "-1",
     audio_duration: float = 30.0,
 ) -> Iterable[dict[str, Any]]:
     """Yield raw DecodingResult data plus derived metrics for every draw."""
@@ -68,6 +69,15 @@ def decode_samples(
     if best_of is not None and best_of < 1:
         raise ValueError("best_of must be at least 1")
     fp16 = getattr(model, "device", torch.device("cpu")).type == "cuda"
+    tokenizer = whisper.tokenizer.get_tokenizer(
+        getattr(model, "is_multilingual", True), language="ja", task="transcribe"
+    )
+    effective_suppress_tokens = [] if suppress_tokens is None else suppress_tokens
+    if isinstance(suppress_tokens, str) and "-1" in suppress_tokens.split(","):
+        control_tokens = [*tokenizer.all_language_tokens, tokenizer.no_timestamps]
+        effective_suppress_tokens = ",".join(
+            [suppress_tokens, *(str(token) for token in control_tokens if token is not None)]
+        )
     sample_id = 0
     for temperature in temperatures:
         if not 0 <= temperature <= 1:
@@ -82,9 +92,10 @@ def decode_samples(
                 "without_timestamps": True,
                 "fp16": fp16,
                 "prompt": prompt or None,
+                "prefix": prefix or None,
                 "sample_len": sample_len,
                 "suppress_blank": suppress_blank,
-                "suppress_tokens": [] if suppress_tokens is None else suppress_tokens,
+                "suppress_tokens": effective_suppress_tokens,
             }
             if temperature > 0 and best_of is not None:
                 option_values["best_of"] = best_of
@@ -105,11 +116,13 @@ def decode_samples(
                 "temperature_sample_id": index,
                 "audio_file": str(audio_file),
                 "prompt": prompt,
+                "prefix": prefix,
                 "best_of": best_of if temperature > 0 else None,
                 "sample_len": sample_len,
                 "suppress_blank": suppress_blank,
-                "suppress_tokens": [] if suppress_tokens is None else suppress_tokens,
+                "suppress_tokens": effective_suppress_tokens,
                 "text": text,
+                "full_text": f"{prefix or ''}{text}",
                 "tokens": [int(token) for token in decoded.tokens],
                 "avg_logprob": float(decoded.avg_logprob),
                 "no_speech_prob": float(decoded.no_speech_prob),
