@@ -1,0 +1,9 @@
+# `pip install -r requirements.txt` is supported; `uv sync --extra dev` is preferred.
+jamorasep>=0.0.2
+matplotlib>=3.9
+numpy>=1.26
+openai-whisper>=20250625
+pykakasi>=2.3
+PyYAML>=6.0
+scipy>=1.13
+soundfile>=0.12

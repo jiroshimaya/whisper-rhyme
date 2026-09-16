@@ -1,0 +1,180 @@
+# Whisper Rap Hallucination Experiment
+
+OpenAI Whisper `large-v3` を通常の音声認識器ではなく、曖昧な音響入力で条件付ける日本語テキスト生成器として調べるための最小実験環境です。外部音源や既存歌詞は使わず、ビートと人声風の疑似ボーカルをすべてローカル合成します。
+
+この実験は「良いラップを自動生成する」ことを最初の成功条件にしていません。まず、ビートと疑似発声に対して `large-v3` が入力に存在しない日本語文を継続的に生成するか、その量・多様性・decoderの確信度を記録します。
+
+## 実験の仕組み
+
+公式 `openai-whisper` の `model.decode()` に30秒のlog-Mel spectrogramを直接渡します。`model.transcribe()` の no-speech判定、logprob threshold、timestampに基づくsilence/hallucination除外は通りません。デフォルトではblank tokenおよびnon-speech tokenの抑制も無効です（CLIで有効化できます）。
+
+4条件を比較します。
+
+| 条件 | ビート | 疑似ボーカル | decoder prompt |
+|---|---:|---:|---:|
+| A | ✓ |  |  |
+| B |  | ✓ |  |
+| C | ✓ | ✓ |  |
+| D | ✓ | ✓ | ✓ |
+
+Dの音声はCと同一です。違いはWhisper decoderに渡すオリジナルのラップ風文脈だけです。
+
+疑似ボーカルには次の3方式があります。
+
+- `vowel`: `a/i/u/e/o` の倍音・formantを持つ母音列
+- `cv`: `ta/ka/ra/na/ma/sa/da/ba/pa` 風の、ノイズ化した子音とformant-shiftした母音
+- `hum`: 「んー／あー／うー」に近い低域寄りの曖昧な発声
+
+## セットアップ
+
+Python 3.10以上、FFmpeg、十分なRAMまたはVRAMが必要です。`large-v3` は大きいため、初回はモデルのダウンロードにも時間と空き容量を要します。
+
+```bash
+uv sync --extra dev
+```
+
+通常のpip環境では次も使えます。
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+以下の例は `uv run` を使います。pip環境では先頭の `uv run` を外してください。
+
+## 音声生成
+
+```bash
+uv run python scripts/generate_inputs.py \
+  --condition C \
+  --duration 30 \
+  --bpm 90 \
+  --seed 1234
+```
+
+出力はデフォルトで `generated_audio/condition_C_seed_1234_cv.wav`、設定と実際の疑似音節イベントは同名のJSONです。A〜D、`--voice-mode vowel|cv|hum`、`--vowels aioai` を切り替えられます。同じ設定とseedからは同じ音声が得られます。
+
+### 指定モーラタイミング
+
+第二段階用に、開始時刻・長さ・任意の疑似音節をJSONで指定できます。
+
+```json
+[
+  {"start": 0.00, "duration": 0.20, "symbol": "ta"},
+  {"start": 0.25, "duration": 0.20, "symbol": "ra"},
+  {"start": 0.50, "duration": 0.40, "symbol": "na"},
+  {"start": 1.00, "duration": 0.20, "symbol": "ma"}
+]
+```
+
+```bash
+uv run python scripts/generate_inputs.py \
+  --condition C --seed 1234 --rhythm-file rhythm.json
+```
+
+母音条件付けには `--voice-mode vowel --vowels aioai` を使います。イベント側の `symbol` に母音を指定することもできます。
+
+## Whisper decode実験
+
+音声がまだなければ同じ引数で自動生成します。
+
+```bash
+uv run python scripts/run_experiment.py \
+  --condition C \
+  --model large-v3 \
+  --temperature 0.8 \
+  --n-samples 50 \
+  --seed 1234
+```
+
+`openai/whisper-large-v3` も指定名として受理しますが、公式実装の `large-v3` checkpointへ正規化します。`large-v3-turbo` その他のモデルは誤使用を防ぐため拒否します。
+
+温度スイープ（`0.0, 0.2, 0.4, 0.6, 0.8, 1.0`）は次の通りです。
+
+```bash
+uv run python scripts/run_experiment.py \
+  --condition C --temperature-sweep --n-samples 50 --seed 1234
+```
+
+複数の任意温度は `--temperature` を繰り返します。`temperature > 0` では `--best-of N` も指定できます。各sampleには独立した `trial_seed = seed + sample_id` を設定します。`temperature=0` はgreedy decodeなので、同じ入力の反復結果が同一になるのが正常です。
+
+### promptあり（条件D）
+
+```bash
+uv run python scripts/run_experiment.py \
+  --condition D \
+  --model large-v3 \
+  --temperature 0.8 \
+  --n-samples 50 \
+  --seed 1234 \
+  --prompt-file prompts/rap_01.txt
+```
+
+promptはinstructionではなく、decoderの直前文脈として渡されます。リポジトリ内の3ファイルはすべて実験用のオリジナル短文です。
+
+## 出力
+
+結果は1 decodeにつき1行のJSONLです。長時間実験で途中停止しても、完了済みの行は都度flushされます。
+
+```json
+{
+  "condition": "C",
+  "seed": 1234,
+  "trial_seed": 1236,
+  "temperature": 0.8,
+  "sample_id": 2,
+  "audio_file": "generated_audio/condition_C_seed_1234_cv.wav",
+  "prompt": null,
+  "text": "...",
+  "tokens": [50364],
+  "avg_logprob": -1.2,
+  "no_speech_prob": 0.82,
+  "compression_ratio": 1.1,
+  "character_count": 12,
+  "japanese_character_ratio": 1.0,
+  "reading": "...",
+  "moras": ["..."],
+  "mora_count": 10,
+  "mora_per_second": 0.33,
+  "phrase_mora_counts": [10],
+  "phrase_end_moras": [{"last_1": ["..."], "last_2": ["..."], "last_3": ["..."]}]
+}
+```
+
+`no_speech_prob` が高くても結果は破棄しません。これにより、モデルが音声なしと判断しながらどの程度の確信度でテキストを生成するかを後から調べられます。
+
+## 集計と可視化
+
+```bash
+uv run python scripts/summarize_results.py results/ \
+  --output results/summary.json \
+  --plot-dir results/plots
+```
+
+全体・condition別・temperature別に次を集計します。
+
+- 文字数、日本語文字率、empty/non-empty数
+- unique output率と頻出出力上位10件（重複数・率）
+- `pykakasi` による読み変換と `jamorasep` 基準のモーラ数
+- mora/sec、フレーズ別モーラ数、語尾1/2/3モーラ
+
+PNGにはcondition別平均文字数、日本語文字率、mora/sec、temperature別平均文字数とunique率を保存します。
+
+## 仮説の読み方
+
+1. AとCの平均文字数・non-empty率を比較し、疑似ボーカル追加で生成量が増えるかを見る。
+2. mora eventの密度やdurationを変え、出力モーラ数との対応を見る。
+3. CとDを同じ音声・seed・temperatureで比較し、promptによる語彙や行構造の変化を見る。
+4. temperature別unique率を比較し、多様性が増えるかを見る。
+
+出力モーラ数と入力event数の一致だけで音響的な追従とは断定できません。まず相関を探索し、その後はtoken timestampやforced alignmentを使う検証が必要です。
+
+## 開発時の確認
+
+```bash
+uv run pytest
+uv run ruff check .
+```
+
+既定値は [`configs/default.yaml`](configs/default.yaml) に一覧化しています。CLI引数が実行時の正本です。
