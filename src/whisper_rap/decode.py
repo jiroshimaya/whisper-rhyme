@@ -12,7 +12,12 @@ import numpy as np
 
 from .metrics import analyze_text
 
-ALLOWED_MODELS = {"large-v3", "openai/whisper-large-v3"}
+MODEL_ALIASES = {
+    alias: name
+    for name in ("tiny", "small", "large-v3")
+    for alias in (name, f"openai/whisper-{name}")
+}
+ALLOWED_MODELS = set(MODEL_ALIASES)
 
 
 def _seed_everything(seed: int) -> None:
@@ -29,9 +34,26 @@ def load_model(model_name: str, device: str | None = None, download_root: str | 
     import whisper
 
     if model_name not in ALLOWED_MODELS:
-        raise ValueError("this experiment only permits Whisper large-v3 (not turbo)")
-    official_name = "large-v3" if model_name == "openai/whisper-large-v3" else model_name
+        raise ValueError("this experiment permits multilingual Whisper tiny, small, or large-v3")
+    official_name = MODEL_ALIASES[model_name]
     return whisper.load_model(official_name, device=device, download_root=download_root)
+
+
+def _suppress_tokens_for_model(model: Any, suppress_tokens: Any) -> Any:
+    if suppress_tokens is None:
+        return []
+    if not (isinstance(suppress_tokens, str) and "-1" in suppress_tokens.split(",")):
+        return suppress_tokens
+    import whisper
+
+    tokenizer = whisper.tokenizer.get_tokenizer(
+        model.is_multilingual,
+        num_languages=model.num_languages,
+        language="ja",
+        task="transcribe",
+    )
+    control_tokens = sorted({*tokenizer.all_language_tokens, tokenizer.no_timestamps} - {None})
+    return ",".join([suppress_tokens, *(str(token) for token in control_tokens)])
 
 
 def prepare_mel(audio_file: str | Path, model: Any) -> Any:
@@ -70,15 +92,7 @@ def decode_samples(
     if best_of is not None and best_of < 1:
         raise ValueError("best_of must be at least 1")
     fp16 = getattr(model, "device", torch.device("cpu")).type == "cuda"
-    tokenizer = whisper.tokenizer.get_tokenizer(
-        getattr(model, "is_multilingual", True), language="ja", task="transcribe"
-    )
-    effective_suppress_tokens = [] if suppress_tokens is None else suppress_tokens
-    if isinstance(suppress_tokens, str) and "-1" in suppress_tokens.split(","):
-        control_tokens = [*tokenizer.all_language_tokens, tokenizer.no_timestamps]
-        effective_suppress_tokens = ",".join(
-            [suppress_tokens, *(str(token) for token in control_tokens if token is not None)]
-        )
+    effective_suppress_tokens = _suppress_tokens_for_model(model, suppress_tokens)
     sample_id = 0
     for temperature in temperatures:
         if not 0 <= temperature <= 1:
@@ -108,6 +122,9 @@ def decode_samples(
             row: dict[str, Any] = {
                 "condition": condition.upper(),
                 "model": model_name,
+                "device": str(model.device),
+                "fp16": fp16,
+                "num_languages": model.num_languages,
                 "language": "ja",
                 "task": "transcribe",
                 "without_timestamps": True,
