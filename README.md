@@ -1,6 +1,6 @@
 # Whisper Rap Hallucination Experiment
 
-OpenAI Whisper `large-v3` を通常の音声認識器ではなく、曖昧な音響入力で条件付ける日本語テキスト生成器として調べるための最小実験環境です。外部音源や既存歌詞は使わず、ビートと人声風の疑似ボーカルをすべてローカル合成します。
+OpenAI Whisper `tiny`・`small`・`large-v3` を、曖昧な音響入力で条件付ける日本語テキスト生成器として調べるための実験環境です。既定モデルは `large-v3` です。外部音源や既存歌詞は使わず、ビートと人声風の疑似ボーカルをすべてローカル合成します。
 
 この実験は「良いラップを自動生成する」ことを最初の成功条件にしていません。まず、ビートと疑似発声に対して `large-v3` が入力に存在しない日本語文を継続的に生成するか、その量・多様性・decoderの確信度を記録します。
 
@@ -89,7 +89,7 @@ uv run python scripts/run_experiment.py \
   --seed 1234
 ```
 
-`openai/whisper-large-v3` も指定名として受理しますが、公式実装の `large-v3` checkpointへ正規化します。`large-v3-turbo` その他のモデルは誤使用を防ぐため拒否します。
+多言語版の `tiny`、`small`、`large-v3` に対応します。`openai/whisper-<name>` も同じcheckpointへ正規化します。英語専用の `.en` と `large-v3-turbo` は比較対象外として拒否します。既定値は `large-v3` です。
 
 温度スイープ（`0.0, 0.2, 0.4, 0.6, 0.8, 1.0`）は次の通りです。
 
@@ -250,6 +250,29 @@ seed 3579、各20 decodeの実行結果は次の通りです。「アンカー�
 テーマ語ありと中立語ありのペア差は、テーマ語出現率が+85ポイント（bootstrap 95%区間 +70〜+100）、平均テーマ語数が語尾操作なしで+3.05語（+2.05〜+4.15）でした。明瞭語による語彙制御は明確です。一方、事前定義した関連語への波及はテーマ条件5%、アンカーなし条件でも最大5%で、直接挿入していない意味語まで増える証拠は得られませんでした。
 
 テーマ語条件で語尾操作を有効にすると、フレーズ加重の語尾 `/a/` は14.4%から34.5%、`/a a/` は0.7%から8.4%へ増えました。decode単位のペア差はそれぞれ+9.6ポイント（-1.8〜+22.1）、+4.4ポイント（0.0〜+9.6）なので、語彙アンカーと押韻の同時制御は可能性があるものの、韻側は追加検証が必要です。
+
+## モデルサイズ比較
+
+保存済みのアンカー音声6条件を、`tiny`、`small`、`large-v3`へ同じ設定で渡します。入力音声を再合成せず、WAVのSHA-256、prompt、各sampleのseed、ライブラリversionを保存します。音声は上記のアンカー実験で生成した `none/neutral/theme_rhyme_off/on.wav` を使用します。
+
+```bash
+uv run python scripts/run_model_size_comparison.py \
+  --audio-dir generated_audio/lexical_anchor \
+  --output-dir results/model_size_n20 \
+  --models tiny small large-v3 \
+  --temperature 0.6 --n-samples 20 --seed 3579 \
+  --device cpu --threads 8
+
+uv run python scripts/summarize_model_comparison.py results/model_size_n20
+```
+
+同じコマンドへ `--resume` を加えると完了済みsampleを再計算せず再開します。音声、設定、ライブラリversionが変わっていれば再開を拒否します。既存結果は明示的な再開なしには上書きしません。
+
+同一音声のEncoder出力は1回計算して再利用し、Decoderはsampleごとにseedを設定します。モデルごとのMel bin数と特殊tokenに対応しています。`large-v3`は言語数が異なるため、比較実装ではtoken抑制リストもモデル自身のtokenizerから取得します。過去の実行結果とは混ぜず、3モデルを同じ実装・device・精度で再実行してください。
+
+`samples.jsonl`には全出力、`manifest.json`には入力条件、`analysis.json`にはモデル別・条件別の集計を保存します。表層的な日本語候補率、反復率、promptのコピー率、アンカー出現率、語尾母音率を確認できます。日本語候補の判定は意味の自然さを保証せず、文字の出現率はハルシネーションの正確な発生率ではありません。
+
+各条件20回、計360 decodeの[比較結果](reports/model-size-20261008.md)では、アンカーなしの平均文字数はtiny 45.8、small 53.7、large-v3 13.2でした。smallは母音操作への反応も大きい一方、強い反復は20%あり、出力量と文章の質は別に評価する必要があります。
 
 ## 集計と可視化
 

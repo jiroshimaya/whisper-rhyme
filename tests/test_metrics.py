@@ -31,6 +31,12 @@ def test_phrase_vowels_split_whitespace_and_punctuation() -> None:
     assert moras_to_vowels(["コ", "ー", "ド", "ン"]) == ["o", "o", "o"]
 
 
+def test_ra_row_vowels_and_phrase_final_re() -> None:
+    assert moras_to_vowels(["ラ", "リ", "ル", "レ", "ロ"]) == list("aiueo")
+    result = analyze_text("晴れ")
+    assert result["phrase_end_vowels"][0]["last_2"] == ["a", "e"]
+
+
 def test_aggregate_records() -> None:
     result = aggregate_records(
         [
