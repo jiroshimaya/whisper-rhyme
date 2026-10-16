@@ -9,3 +9,8 @@ generated_audio/*
 results/*
 !results/.gitkeep
 *.png
+
+# Claude Code local preferences and isolated sessions
+CLAUDE.local.md
+.claude/settings.local.json
+.claude/worktrees/
