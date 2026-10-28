@@ -16,6 +16,7 @@ import soundfile as sf
 from whisper_rap.article import FINAL_WORDS, article_audio, clear_word_measurements
 from whisper_rap.audio import AudioConfig
 from whisper_rap.comparison import diagnostic_summary, output_diagnostics
+from whisper_rap.context import validate_rhyming_context
 from whisper_rap.decode import decode_samples, load_model, prepare_mel
 from whisper_rap.lexical import lexical_measurements
 from whisper_rap.partial import mora_count_summary, replace_phrase_regions
@@ -96,11 +97,15 @@ def main() -> None:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--frozen-baseline-dir", type=Path,
                         help="run only phrases 2/4 clear, using the original frozen PCM inputs")
+    parser.add_argument("--rhyming-context-only", action="store_true",
+                        help="test a new four-phrase /a a/ context on frozen partial audio, no prefix")
     args = parser.parse_args()
     if args.n_samples < 1 or args.threads < 1 or not 1 <= args.sample_len <= 224:
         parser.error("positive sample/thread counts and sample-len in [1, 224] required")
     if not 0 <= args.temperature <= 1:
         parser.error("temperature must be in [0, 1]")
+    if args.rhyming_context_only and not args.frozen_baseline_dir:
+        parser.error("rhyming-context-only requires frozen-baseline-dir")
 
     import torch
     import whisper
@@ -108,15 +113,23 @@ def main() -> None:
     torch.set_num_threads(args.threads)
     torch.set_num_interop_threads(1)
     prompt = args.prompt_file.read_text().strip()
-    prefix = args.prefix_file.read_text().strip()
-    if not prompt or not prefix:
+    prefix = None if args.rhyming_context_only else args.prefix_file.read_text().strip()
+    if not prompt or (not prefix and not args.rhyming_context_only):
         parser.error("prompt and prefix must be nonempty")
+    context_analysis = None
+    if args.rhyming_context_only:
+        try:
+            context_analysis = validate_rhyming_context(prompt)
+        except ValueError as exc:
+            parser.error(str(exc))
     anchors = json.loads(args.anchor_manifest.read_text())
     entries = anchors["sets"]["rhyme_final"]
     if [entry["word"] for entry in entries] != list(FINAL_WORDS):
         parser.error("clear words must match the phrase-final measurement dictionary")
     config = AudioConfig(duration=12, bpm=90, seed=args.seed, voice_gain=0.72, beat_gain=0.16)
     cells_to_run = PARTIAL_CELLS if args.frozen_baseline_dir else CELLS
+    if args.rhyming_context_only:
+        cells_to_run = (("partial_final", "prompt"),)
     baseline = None
     if args.frozen_baseline_dir:
         baseline = json.loads((args.frozen_baseline_dir / "manifest.json").read_text())
@@ -127,6 +140,10 @@ def main() -> None:
             "threads": args.threads, "whisper_version": whisper.__version__,
             "torch_version": torch.__version__, "config": asdict(config),
         }
+        if args.rhyming_context_only:
+            # Only the decoder context changes; all acoustic and sampling settings stay matched.
+            expected_options.pop("prompt")
+            expected_options.pop("prefix")
         if any(baseline.get(key) != value for key, value in expected_options.items()):
             parser.error("partial comparison requires identical baseline options and environment")
         for name, digest in baseline["source_sha256"].items():
@@ -168,7 +185,8 @@ def main() -> None:
         for name in dict.fromkeys(audio for audio, _ in cells_to_run)
     }
     manifest = {
-        "experiment": "acoustic steps, then context", "cells": cells_to_run,
+        "experiment": ("four rhyming context phrases, no prefix" if args.rhyming_context_only
+                       else "acoustic steps, then context"), "cells": cells_to_run,
         "config": asdict(config), "model": args.model, "n_samples": args.n_samples,
         "seed": args.seed, "temperature": args.temperature, "sample_len": args.sample_len,
         "prompt": prompt, "prefix": prefix, "best_of": 1, "length_penalty": 1.0,
@@ -185,6 +203,11 @@ def main() -> None:
             Path(__file__).resolve(), *sorted(Path("src/whisper_rap").glob("*.py")),
         )},
     }
+    if context_analysis is not None:
+        manifest["context_phrases"] = [
+            {"reading": row["reading"], "mora_count": row["mora_count"],
+             "final_vowels": row["vowels"][-2:]} for row in context_analysis
+        ]
     if baseline:
         manifest["frozen_baseline"] = {
             "manifest_path": str((args.frozen_baseline_dir / "manifest.json").resolve()),

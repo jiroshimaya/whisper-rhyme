@@ -337,6 +337,25 @@ uv run python scripts/run_article_experiment.py \
 
 追加実験とモーラ数の[比較結果](reports/partial-article-20261028.md)も参照してください。
 
+### 4フレーズの押韻文脈だけを与える比較
+
+各12モーラで語尾が`/a a/`になる4フレーズを、decoderの直前文脈に使えます。
+音声は凍結した2・4フレーズ明瞭語条件と同一で、prefixは与えません。
+
+```bash
+uv run python scripts/run_article_experiment.py \
+  --anchor-manifest generated_audio/article_words/manifest.json \
+  --frozen-baseline-dir results/article_experiment \
+  --rhyming-context-only \
+  --prompt-file prompts/rap_aa_four_phrases.txt \
+  --output-dir results/article_rhyming_context \
+  --model large-v3 --n-samples 20 --threads 8
+```
+
+このモードは4行すべてのモーラ数と語尾母音を確認し、変更したpromptと
+`prefix: null`をmanifestへ保存します。音声とサンプリング設定は基準実験に
+合わせ、文脈だけを変更します。旧文脈の出力とは別のディレクトリへ保存してください。
+
 ## 集計と可視化
 
 ```bash
