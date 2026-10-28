@@ -312,6 +312,31 @@ decoder設定、ライブラリversionを保存します。各出力は`samples.
 反応と明瞭語の認識が見られた一方、意味が通る押韻フレーズの安定した生成には
 至りませんでした。
 
+### 2・4フレーズ目だけを明瞭語にする比較
+
+既存の全4フレーズを明瞭語にした音声と、語尾が`/a a/`のCV音声を凍結したまま、
+2・4フレーズ目だけを「花・坂」に置き換えた条件を追加できます。
+1・3フレーズ目と末尾の余白はCV音声と同じPCMサンプルを保ち、2・4フレーズ目は
+全4フレーズ条件から同じPCMサンプルを選びます。再合成・再正規化は行いません。
+
+```bash
+uv run python scripts/run_article_experiment.py \
+  --anchor-manifest generated_audio/article_words/manifest.json \
+  --frozen-baseline-dir results/article_experiment \
+  --output-dir results/article_partial \
+  --model large-v3 --n-samples 20 --threads 8
+```
+
+文脈なし・prompt・prompt+prefixを各20回比較します。基準実験とモデル、入力WAV、
+推論コード、乱数seed、decoder設定、ライブラリ環境が対応していることを確認し、
+既存の音源と結果は変更しません。再開は同じコマンドに`--resume`を加えます。
+
+集計の`mora_counts`は認識テキストの読みを48個の入力CVと比較します。
+文字数とモーラ数、BGMの音楽的な拍数は区別してください。総モーラ数の一致だけでは、
+音源内の各発音時刻への追従は確認できません。
+
+追加実験とモーラ数の[比較結果](reports/partial-article-20261028.md)も参照してください。
+
 ## 集計と可視化
 
 ```bash

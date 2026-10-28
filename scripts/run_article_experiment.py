@@ -18,6 +18,7 @@ from whisper_rap.audio import AudioConfig
 from whisper_rap.comparison import diagnostic_summary, output_diagnostics
 from whisper_rap.decode import decode_samples, load_model, prepare_mel
 from whisper_rap.lexical import lexical_measurements
+from whisper_rap.partial import mora_count_summary, replace_phrase_regions
 from whisper_rap.rhyme import (
     paired_condition_comparison,
     rhyme_measurements,
@@ -31,15 +32,16 @@ CELLS = (
     ("clear_final", "prompt"),
     ("clear_final", "prompt_prefix"),
 )
+PARTIAL_CELLS = tuple(("partial_final", context) for context in ("none", "prompt", "prompt_prefix"))
 
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def summarize(rows: list[dict]) -> dict:
+def summarize(rows: list[dict], cells: tuple = CELLS) -> dict:
     by_cell = {}
-    for audio, context in CELLS:
+    for audio, context in cells:
         key = f"{audio}|{context}"
         selected = [row for row in rows if row["vowel_condition"] == key]
         if not selected:
@@ -47,6 +49,7 @@ def summarize(rows: list[dict]) -> dict:
         phrases = sum(row["recognized_phrase_count"] for row in selected)
         by_cell[key] = {
             **diagnostic_summary(selected),
+            "mora_counts": mora_count_summary(selected),
             "recognized_phrase_count": phrases,
             **{field: sum(row[field] for row in selected) / len(selected) for field in (
                 "clear_word_sample", "clear_word_reading_sample", "related_term_sample",
@@ -61,6 +64,10 @@ def summarize(rows: list[dict]) -> dict:
         ("clear_final|none", "cv_final|none"),
         ("clear_final|prompt", "clear_final|none"),
         ("clear_final|prompt_prefix", "clear_final|prompt"),
+        ("partial_final|none", "clear_final|none"),
+        ("partial_final|none", "cv_final|none"),
+        ("partial_final|prompt", "partial_final|none"),
+        ("partial_final|prompt_prefix", "partial_final|prompt"),
     )
     return {
         "completed": len(rows), "by_cell": by_cell,
@@ -87,6 +94,8 @@ def main() -> None:
     parser.add_argument("--sample-len", type=int, default=64)
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--frozen-baseline-dir", type=Path,
+                        help="run only phrases 2/4 clear, using the original frozen PCM inputs")
     args = parser.parse_args()
     if args.n_samples < 1 or args.threads < 1 or not 1 <= args.sample_len <= 224:
         parser.error("positive sample/thread counts and sample-len in [1, 224] required")
@@ -107,6 +116,26 @@ def main() -> None:
     if [entry["word"] for entry in entries] != list(FINAL_WORDS):
         parser.error("clear words must match the phrase-final measurement dictionary")
     config = AudioConfig(duration=12, bpm=90, seed=args.seed, voice_gain=0.72, beat_gain=0.16)
+    cells_to_run = PARTIAL_CELLS if args.frozen_baseline_dir else CELLS
+    baseline = None
+    if args.frozen_baseline_dir:
+        baseline = json.loads((args.frozen_baseline_dir / "manifest.json").read_text())
+        expected_options = {
+            "model": args.model, "seed": args.seed, "temperature": args.temperature,
+            "n_samples": args.n_samples, "sample_len": args.sample_len,
+            "prompt": prompt, "prefix": prefix, "device": "cpu", "fp16": False,
+            "threads": args.threads, "whisper_version": whisper.__version__,
+            "torch_version": torch.__version__, "config": asdict(config),
+        }
+        if any(baseline.get(key) != value for key, value in expected_options.items()):
+            parser.error("partial comparison requires identical baseline options and environment")
+        for name, digest in baseline["source_sha256"].items():
+            if name.startswith("src/") and sha256(Path(name)) != digest:
+                parser.error(f"baseline inference or audio code changed: {name}")
+        for name in ("cv_final", "clear_final"):
+            item = baseline["audio"][name]
+            if sha256(Path(item["path"])) != item["sha256"]:
+                parser.error(f"frozen baseline audio changed: {name}")
     input_dir = args.output_dir / "audio"
     manifest_path = args.output_dir / "manifest.json"
     samples_path = args.output_dir / "samples.jsonl"
@@ -117,19 +146,29 @@ def main() -> None:
         parser.error("resume requires a saved manifest")
     input_dir.mkdir(parents=True, exist_ok=True)
     if not args.resume:
-        cells, metadata = article_audio(config, [Path(entry["audio_file"]) for entry in entries])
-        for name, audio in cells.items():
-            sf.write(input_dir / f"{name}.wav", audio, config.sample_rate, subtype="PCM_16")
+        if baseline:
+            cv, cv_rate = sf.read(baseline["audio"]["cv_final"]["path"], dtype="int16")
+            clear, clear_rate = sf.read(baseline["audio"]["clear_final"]["path"], dtype="int16")
+            if cv_rate != config.sample_rate or clear_rate != cv_rate:
+                parser.error("frozen audio sample rates do not match")
+            partial = replace_phrase_regions(cv, clear, sample_rate=cv_rate, bpm=config.bpm)
+            sf.write(input_dir / "partial_final.wav", partial, cv_rate, subtype="PCM_16")
+            metadata = {"clear_phrases": [2, 4], "clear_words": ["花", "坂"],
+                        "cv_phrases": [1, 3], "input_moras": 48}
+        else:
+            cells, metadata = article_audio(config, [Path(entry["audio_file"]) for entry in entries])
+            for name, audio in cells.items():
+                sf.write(input_dir / f"{name}.wav", audio, config.sample_rate, subtype="PCM_16")
         (input_dir / "events.json").write_text(
             json.dumps(metadata, ensure_ascii=False, indent=2) + "\n"
         )
     audio_inputs = {
         name: {"path": str((input_dir / f"{name}.wav").resolve()),
                "sha256": sha256(input_dir / f"{name}.wav")}
-        for name in dict.fromkeys(audio for audio, _ in CELLS)
+        for name in dict.fromkeys(audio for audio, _ in cells_to_run)
     }
     manifest = {
-        "experiment": "acoustic steps, then context", "cells": CELLS,
+        "experiment": "acoustic steps, then context", "cells": cells_to_run,
         "config": asdict(config), "model": args.model, "n_samples": args.n_samples,
         "seed": args.seed, "temperature": args.temperature, "sample_len": args.sample_len,
         "prompt": prompt, "prefix": prefix, "best_of": 1, "length_penalty": 1.0,
@@ -146,6 +185,12 @@ def main() -> None:
             Path(__file__).resolve(), *sorted(Path("src/whisper_rap").glob("*.py")),
         )},
     }
+    if baseline:
+        manifest["frozen_baseline"] = {
+            "manifest_path": str((args.frozen_baseline_dir / "manifest.json").resolve()),
+            "manifest_sha256": sha256(args.frozen_baseline_dir / "manifest.json"),
+            "audio": {name: baseline["audio"][name] for name in ("cv_final", "clear_final")},
+        }
     # Normalize tuples before equality checking the on-disk JSON.
     manifest = json.loads(json.dumps(manifest))
     if args.resume:
@@ -156,16 +201,17 @@ def main() -> None:
     rows = [json.loads(line) for line in samples_path.read_text().splitlines()] \
         if samples_path.exists() else []
     done = {(row["audio_mode"], row["context_mode"], row["temperature_sample_id"]) for row in rows}
-    expected = {(*cell, i) for cell in CELLS for i in range(args.n_samples)}
+    expected = {(*cell, i) for cell in cells_to_run for i in range(args.n_samples)}
     if len(done) != len(rows) or not done <= expected:
         parser.error("saved rows have duplicate or unexpected keys")
     if done == expected:
-        summary_path.write_text(json.dumps(summarize(rows), ensure_ascii=False, indent=2) + "\n")
+        summary_path.write_text(json.dumps(summarize(rows, cells_to_run), ensure_ascii=False,
+                                           indent=2) + "\n")
         return
     model = load_model(args.model, "cpu")
     with samples_path.open("a") as handle:
         for audio, source in audio_inputs.items():
-            pending = [(context, i) for name, context in CELLS if name == audio
+            pending = [(context, i) for name, context in cells_to_run if name == audio
                        for i in range(args.n_samples) if (audio, context, i) not in done]
             if not pending:
                 continue
@@ -194,6 +240,14 @@ def main() -> None:
                 })
                 row.update(lexical_measurements(row["text"], row["reading"]))
                 row.update(clear_word_measurements(row["text"], row["reading"]))
+                if audio == "partial_final":
+                    row.update({
+                        "present_clear_word_sample": any(w in row["text"] for w in ("花", "坂")),
+                        "present_clear_word_reading_sample": any(
+                            w in row["reading"] for w in ("ハナ", "サカ")
+                        ),
+                        "clear_phrases": [2, 4], "clear_words": ["花", "坂"],
+                    })
                 row.update(rhyme_measurements(row))
                 row.update(output_diagnostics(row))
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -202,7 +256,8 @@ def main() -> None:
                 print(json.dumps({"completed": len(rows), "expected": len(expected),
                                   "cell": row["vowel_condition"], "sample": index,
                                   "text": row["text"]}, ensure_ascii=False), flush=True)
-            summary_path.write_text(json.dumps(summarize(rows), ensure_ascii=False, indent=2) + "\n")
+            summary_path.write_text(json.dumps(summarize(rows, cells_to_run), ensure_ascii=False,
+                                               indent=2) + "\n")
 
 
 if __name__ == "__main__":
