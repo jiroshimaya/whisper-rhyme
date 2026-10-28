@@ -360,6 +360,28 @@ uv run python scripts/run_article_experiment.py \
 与えても自然なラップの安定した生成には至りませんでした。出力例の表示用の改行と、
 音声への時間的な対応は区別して扱います。
 
+### 明瞭語をフレーズ冒頭へ移す比較
+
+同じ「朝・花・山・坂」の録音を各フレーズの最初の2つのCV位置へ移し、
+末尾は曖昧CVの`/a a/`に戻せます。2・4フレーズだけと全4フレーズの2条件を、
+文脈・prefixなしで実行します。既存の末尾条件は再実行せず、対応するseedの
+凍結済み出力と比較します。
+
+```bash
+uv run python scripts/run_onset_experiment.py \
+  --baseline-dir results/article_experiment \
+  --partial-dir results/article_partial \
+  --anchor-manifest generated_audio/article_words/manifest.json \
+  --output-dir results/article_onset
+```
+
+元音源のPCM、明瞭語の録音、推論設定・環境・ソースの一致を確認してから実行します。
+明瞭語の声、音量、再生速度、共通の正規化係数を保ち、冒頭の置換範囲以外はCV音源と
+同じPCMにします。「坂」の短い末尾が次のCVと重なる場合は、そのCVを残して重ねます。
+重なる秒数はmanifestに記録します。`--resume`は入力とソースが同じ場合だけ許可します。
+出力の単語出現率は音声内の位置の一致を保証せず、総モーラ数や出力テキストの区切りも
+音楽的な拍への追従を保証しません。[実行結果](reports/onset-article-20261028.md)を参照してください。
+
 ## 集計と可視化
 
 ```bash
