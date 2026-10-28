@@ -274,6 +274,44 @@ uv run python scripts/summarize_model_comparison.py results/model_size_n20
 
 各条件20回、計360 decodeの[比較結果](reports/model-size-20261008.md)では、アンカーなしの平均文字数はtiny 45.8、small 53.7、large-v3 13.2でした。smallは母音操作への反応も大きい一方、強い反復は20%あり、出力量と文章の質は別に評価する必要があります。
 
+## 音声だけの誘導からdecoder文脈を追加する比較
+
+90 BPM・12秒の合成入力を使い、ビートのみ、CV追加、CVの末尾2モーラを
+`/a a/`へ変更、末尾を明瞭語「朝・花・山・坂」へ置換、decoder prompt追加、
+promptとprefix追加の6条件を比較します。明瞭語はフレーズ末尾に置き、4語とも
+母音が`/a a/`になる語を使います。4フレーズはそれぞれ1小節・12モーラ相当です。
+
+```bash
+uv run python scripts/synthesize_anchor_words.py \
+  --profile rhyme-final \
+  --output-dir generated_audio/article_words \
+  --manifest generated_audio/article_words/manifest.json
+
+uv run python scripts/run_article_experiment.py \
+  --anchor-manifest generated_audio/article_words/manifest.json \
+  --output-dir results/article_experiment \
+  --model large-v3 --n-samples 20 --threads 8
+```
+
+音声合成にはローカルVOICEVOXを使います。既定の話者ID 2は
+VOICEVOX:四国めたん（ノーマル）です。音声を公開する際には利用規約に従ってください。
+
+ビートと音声全体の正規化係数を条件間で共通にし、明瞭語の置換領域外の
+サンプルを保ちます。promptとprefixの比較には同じWAVを使います。
+各条件の乱数seedは対応させ、CPU・float32で推論します。
+CVの母音操作では`/a/`の位置と総量の両方が変わるため、位置だけの効果とは
+解釈できません。明瞭語の直接転写による語尾一致も、自由な押韻生成とは区別します。
+
+`manifest.json`にはWAV・音節イベント・明瞭語音源・実験ソースのハッシュ、
+decoder設定、ライブラリversionを保存します。各出力は`samples.jsonl`へ即時保存し、
+`summary.json`に条件別の集計と対応seedのbootstrap区間を保存します。
+中断後は同じコマンドに`--resume`を付けて再開します。入力、実験ソース、
+設定、環境が変わっていれば再開を拒否します。
+
+各条件20回・計120回の[比較結果](reports/article-20261028.md)では、語尾母音への
+反応と明瞭語の認識が見られた一方、意味が通る押韻フレーズの安定した生成には
+至りませんでした。
+
 ## 集計と可視化
 
 ```bash
