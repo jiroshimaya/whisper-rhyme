@@ -14,6 +14,8 @@ ANCHOR_SETS = {
     "neutral": ("これ", "ただ", "いま", "ことば"),
 }
 
+RHYME_FINAL_SETS = {"rhyme_final": ("朝", "花", "山", "坂")}
+
 
 def post(url: str, data: bytes | None = None, content_type: str | None = None) -> bytes:
     headers = {"Content-Type": content_type} if content_type else {}
@@ -46,12 +48,14 @@ def main() -> None:
     parser.add_argument("--speaker", type=int, default=2)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--profile", choices=("lexical", "rhyme-final"), default="lexical")
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     rendered_sets: dict[str, list[dict[str, object]]] = {}
     manifest: dict[str, object] = {"speaker": args.speaker, "sets": rendered_sets}
-    for set_name, words in ANCHOR_SETS.items():
+    sets = RHYME_FINAL_SETS if args.profile == "rhyme-final" else ANCHOR_SETS
+    for set_name, words in sets.items():
         entries = []
         for index, word in enumerate(words):
             output = args.output_dir / f"{set_name}_{index}.wav"
