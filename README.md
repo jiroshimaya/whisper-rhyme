@@ -1,418 +1,63 @@
-# Whisper Rap Hallucination Experiment
+# Whisperくん、韻を踏みなさい — 再現実験
 
-OpenAI Whisper `tiny`・`small`・`large-v3` を、曖昧な音響入力で条件付ける日本語テキスト生成器として調べるための実験環境です。既定モデルは `large-v3` です。外部音源や既存歌詞は使わず、ビートと人声風の疑似ボーカルをすべてローカル合成します。
+Qiita記事「[Whisperくん、韻を踏みなさい](https://qiita.com/shimajiroxyz/items/9653c39599cb2eb59695)」の実験コードです。曖昧な合成音声や短い明瞭語、decoderの直前文脈で、Whisper large-v3の出力の語尾を誘導できるか調べます。今回の実験では、意味が通る押韻フレーズの安定した生成には至りませんでした。
 
-この実験は「良いラップを自動生成する」ことを最初の成功条件にしていません。まず、ビートと疑似発声に対して `large-v3` が入力に存在しない日本語文を継続的に生成するか、その量・多様性・decoderの確信度を記録します。
+ビートと無意味なCV（子音＋母音）はローカル合成し、「朝・花・山・坂」はVOICEVOX:四国めたん（ノーマル）で合成します。外部の楽曲や既存歌詞は使いません。`transcribe()`の無音判定による区間のスキップを通さず、`model.decode()`の全出力を保存します。
 
-## 実験の仕組み
+## 記事の再現
 
-公式 `openai-whisper` の `model.decode()` に30秒のlog-Mel spectrogramを直接渡します。`model.transcribe()` の no-speech判定、logprob threshold、timestampに基づくsilence/hallucination除外は通りません。デフォルトではblank tokenおよびnon-speech tokenの抑制も無効です（CLIで有効化できます）。
-
-4条件を比較します。
-
-| 条件 | ビート | 疑似ボーカル | decoder prompt |
-|---|---:|---:|---:|
-| A | ✓ |  |  |
-| B |  | ✓ |  |
-| C | ✓ | ✓ |  |
-| D | ✓ | ✓ | ✓ |
-
-Dの音声はCと同一です。違いはWhisper decoderに渡すオリジナルのラップ風文脈だけです。
-
-疑似ボーカルには次の3方式があります。
-
-- `vowel`: `a/i/u/e/o` の倍音・formantを持つ母音列
-- `cv`: `ta/ka/ra/na/ma/sa/da/ba/pa` 風の、ノイズ化した子音とformant-shiftした母音
-- `hum`: 「んー／あー／うー」に近い低域寄りの曖昧な発声
-- `degraded_tts`: オリジナルの無意味仮名TTSを帯域制限・速度揺らぎ・短いdropoutで崩した発声
-
-## セットアップ
-
-Python 3.10以上、FFmpeg、十分なRAMまたはVRAMが必要です。`large-v3` は大きいため、初回はモデルのダウンロードにも時間と空き容量を要します。
+必要な環境はPython 3.11、[uv](https://docs.astral.sh/uv/)、FFmpeg、ローカルで起動した[VOICEVOX ENGINE](https://github.com/VOICEVOX/voicevox_engine)です。推論はCPU・float32で行います。依存パッケージとWhisperモデルの初回ダウンロードにはネットワークと空き容量が必要です。
 
 ```bash
-uv sync --extra dev
-```
+git clone https://github.com/jiroshimaya/whisper-rhyme.git
+cd whisper-rhyme
+uv sync --frozen --extra dev --python 3.11
 
-通常のpip環境では次も使えます。
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-以下の例は `uv run` を使います。pip環境では先頭の `uv run` を外してください。
-
-## 音声生成
-
-```bash
-uv run python scripts/generate_inputs.py \
-  --condition C \
-  --duration 30 \
-  --bpm 90 \
-  --seed 1234
-```
-
-出力はデフォルトで `generated_audio/condition_C_seed_1234_cv.wav`、設定と実際の疑似音節イベントは同名のJSONです。A〜D、`--voice-mode vowel|cv|hum`、`--vowels aioai` を切り替えられます。同じ設定とseedからは同じ音声が得られます。
-
-### 指定モーラタイミング
-
-第二段階用に、開始時刻・長さ・任意の疑似音節をJSONで指定できます。
-
-```json
-[
-  {"start": 0.00, "duration": 0.20, "symbol": "ta"},
-  {"start": 0.25, "duration": 0.20, "symbol": "ra"},
-  {"start": 0.50, "duration": 0.40, "symbol": "na"},
-  {"start": 1.00, "duration": 0.20, "symbol": "ma"}
-]
-```
-
-```bash
-uv run python scripts/generate_inputs.py \
-  --condition C --seed 1234 --rhythm-file rhythm.json
-```
-
-母音条件付けには `--voice-mode vowel --vowels aioai` を使います。イベント側の `symbol` に母音を指定することもできます。
-
-## Whisper decode実験
-
-音声がまだなければ同じ引数で自動生成します。
-
-```bash
-uv run python scripts/run_experiment.py \
-  --condition C \
-  --model large-v3 \
-  --temperature 0.8 \
-  --n-samples 50 \
-  --seed 1234
-```
-
-多言語版の `tiny`、`small`、`large-v3` に対応します。`openai/whisper-<name>` も同じcheckpointへ正規化します。英語専用の `.en` と `large-v3-turbo` は比較対象外として拒否します。既定値は `large-v3` です。
-
-温度スイープ（`0.0, 0.2, 0.4, 0.6, 0.8, 1.0`）は次の通りです。
-
-```bash
-uv run python scripts/run_experiment.py \
-  --condition C --temperature-sweep --n-samples 50 --seed 1234
-```
-
-複数の任意温度は `--temperature` を繰り返します。`temperature > 0` では `--best-of N` も指定できます。各sampleには独立した `trial_seed = seed + sample_id` を設定します。`temperature=0` はgreedy decodeなので、同じ入力の反復結果が同一になるのが正常です。
-
-### promptあり（条件D）
-
-```bash
-uv run python scripts/run_experiment.py \
-  --condition D \
-  --model large-v3 \
-  --temperature 0.8 \
-  --n-samples 50 \
-  --seed 1234 \
-  --prompt-file prompts/rap_01.txt
-```
-
-promptはinstructionではなく、decoderの直前文脈として渡されます。リポジトリ内のpromptはすべて実験用のオリジナル短文です。
-
-`--prefix-file`を併用すると、直前文脈とは別に次の出力の書き出しを条件付けできます。生成結果にはprefix自体を含まない`text`と、結合した`full_text`の両方を保存します。既定ではWhisperのnon-speech記号と言語切替tokenを抑制しますが、no-speech確率による結果の破棄は行いません。
-
-## ラップ誘導2×2×2実験
-
-ローカルVOICEVOXから著作物を含まない無意味仮名列を作り、劣化TTS入力を生成します。音声を外部配布する場合は使用したVOICEVOX話者の利用規約とクレジット条件を確認してください。
-
-```bash
-uv run python scripts/synthesize_gibberish.py \
-  --output generated_audio/gibberish_source.wav
-
-uv run python scripts/generate_inputs.py \
-  --condition C --duration 16 --bpm 90 --seed 1234 \
-  --voice-mode degraded_tts \
-  --tts-source generated_audio/gibberish_source.wav \
-  --output generated_audio/matrix_degraded_tts.wav
-```
-
-現行CVと劣化TTS、promptのみとprompt+prefix、temperature 0.6と0.8を各20回比較します。モデルは一度だけロードされ、各行は完了直後に保存されます。
-
-```bash
-uv run python scripts/run_conditioning_matrix.py \
-  --cv-audio generated_audio/matrix_cv.wav \
-  --tts-audio generated_audio/matrix_degraded_tts.wav \
-  --prompt-file prompts/rap_context.txt \
-  --prefix-file prompts/rap_prefix.txt \
-  --temperature 0.6 0.8 --n-samples 20 \
-  --device cpu \
-  --output results/conditioning_matrix.jsonl
-```
-
-中断後は同じコマンドへ`--resume`を加えます。結果には`acoustic_mode`、`conditioning_mode`、定型的ASR hallucinationの検出結果、最低限の日本語候補条件を満たす`usable_candidate`を追加します。
-
-## 出力
-
-結果は1 decodeにつき1行のJSONLです。長時間実験で途中停止しても、完了済みの行は都度flushされます。
-
-```json
-{
-  "condition": "C",
-  "seed": 1234,
-  "trial_seed": 1236,
-  "temperature": 0.8,
-  "sample_id": 2,
-  "audio_file": "generated_audio/condition_C_seed_1234_cv.wav",
-  "prompt": null,
-  "text": "...",
-  "tokens": [50364],
-  "avg_logprob": -1.2,
-  "no_speech_prob": 0.82,
-  "compression_ratio": 1.1,
-  "character_count": 12,
-  "japanese_character_ratio": 1.0,
-  "reading": "...",
-  "moras": ["..."],
-  "mora_count": 10,
-  "mora_per_second": 0.33,
-  "phrase_mora_counts": [10],
-  "phrase_end_moras": [{"last_1": ["..."], "last_2": ["..."], "last_3": ["..."]}]
-}
-```
-
-`no_speech_prob` が高くても結果は破棄しません。これにより、モデルが音声なしと判断しながらどの程度の確信度でテキストを生成するかを後から調べられます。
-
-## 母音による押韻制御実験
-
-無意味なCV音声の `/a/` の量と位置を変え、認識結果のフレーズ末尾が「あ」または「ああ」になる割合を比較できます。4条件は同じ子音、タイミング、ビート、音量、decoder prompt、生成seedを共有します。
-
-| 条件 | 入力母音 |
-|---|---|
-| `balanced` | 5母音をほぼ均等に配置 |
-| `a_heavy` | 全体の70%を `/a/` にする |
-| `a_shuffled` | `a_final` と同じ母音数をランダム配置 |
-| `a_final` | 8つの各フレーズ末尾2モーラを `/a a/` にする |
-
-`a_final` と `a_shuffled` は母音のヒストグラムが完全に同じなので、両者の差は `/a/` の量ではなく配置によるものです。
-
-```bash
-uv run python scripts/run_vowel_rhyme_experiment.py \
-  --prompt-file prompts/vowel_rhyme_context.txt \
-  --prefix-file prompts/vowel_rhyme_prefix.txt \
-  --temperature 0.6 --n-samples 20 --device cpu \
-  --output results/vowel_rhyme.jsonl \
-  --summary results/vowel_rhyme_summary.json
-```
-
-JSONLには認識テキストの全母音に占める「あ」の割合、フレーズ末尾1母音・2母音のtarget一致率、フレーズ末尾同士の一致率を保存します。summaryは条件ごとの合算値です。空白もフレーズ境界として扱うため、Whisperが句読点の代わりに出す全角・半角スペースも評価に含まれます。
-
-seed 2468、temperature 0.6、各20 decodeの探索的実行では次の結果でした。
-
-| 条件 | 入力の `/a/` 率 | 出力の平均 `/a/` 率 | 語尾 `/a/` | 語尾 `/a a/` |
-|---|---:|---:|---:|---:|
-| `balanced` | 20.3% | 25.2% | 28.6% | 8.6% |
-| `a_heavy` | 70.3% | 31.2% | 35.1% | 8.1% |
-| `a_shuffled` | 43.8% | 31.8% | 28.1% | 12.5% |
-| `a_final` | 43.8% | 32.3% | 43.5% | 17.4% |
-
-同じ母音数の `a_final` と `a_shuffled` で、出力全体の `/a/` 率はほぼ同じまま、語尾 `/a/` は15.4ポイント、語尾 `/a a/` は4.9ポイント高くなりました。ただしdecode単位のペア差は語尾 `/a/` が+7.1ポイント（bootstrap 95%区間 -9.0〜+22.1）、語尾 `/a a/` が+2.6ポイント（-1.8〜+8.8）で、各20本では統計的に確定していません。母音の位置による弱い誘導信号として扱い、seedや標本数を増やして再検証する必要があります。
-
-## 明瞭語による語彙アンカー実験
-
-各フレーズの冒頭へ短い明瞭語を混ぜ、残りを無意味CV音声にすると、Whisperがアンカー語を含む長い行として補完するかを調べられます。テーマ語 `夜・街・影・鼓動`、同じ2〜3モーラの中立語 `これ・ただ・いま・ことば`、アンカーなしの3条件を、語尾 `/a a/` の有無と組み合わせた3×2実験です。
-
-ローカルVOICEVOXでアンカー音声とmanifestを作ります。
-
-```bash
-uv run python scripts/synthesize_anchor_words.py \
-  --output-dir generated_audio/lexical_anchors/words \
-  --manifest generated_audio/lexical_anchors/manifest.json
-```
-
-音声を外部配布する場合は、使用したVOICEVOX話者の利用規約とクレジット条件を確認してください。実験は次のコマンドで実行します。
-
-```bash
-uv run python scripts/run_lexical_anchor_experiment.py \
-  --anchor-manifest generated_audio/lexical_anchors/manifest.json \
-  --prompt-file prompts/lexical_anchor_context.txt \
-  --prefix-file prompts/vowel_rhyme_prefix.txt \
-  --temperature 0.6 --n-samples 20 --device cpu \
-  --output results/lexical_anchor.jsonl \
-  --summary results/lexical_anchor_summary.json
-```
-
-seed 3579、各20 decodeの実行結果は次の通りです。「アンカー認識」は各条件で挿入した語の読みが1語以上出た割合、「テーマ語出現」は `夜・街・影・鼓動` の表記が1語以上出た割合です。
-
-| アンカー | 語尾 `/a a/` | アンカー認識 | テーマ語出現 | 平均テーマ語数 | 平均文字数 | 語尾 `/a/` | 語尾 `/a a/` |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| なし | なし | 0% | 0% | 0.00 | 14.1 | 18.0% | 2.0% |
-| 中立語 | なし | 40% | 0% | 0.00 | 9.8 | 54.8% | 11.9% |
-| テーマ語 | なし | **80%** | **85%** | **3.05** | **33.8** | 14.4% | 0.7% |
-| なし | あり | 0% | 5% | 0.05 | 12.3 | 22.5% | 5.0% |
-| 中立語 | あり | 40% | 0% | 0.00 | 5.5 | 54.8% | 12.9% |
-| テーマ語 | あり | **80%** | **85%** | **2.70** | **26.7** | 34.5% | 8.4% |
-
-テーマ語ありと中立語ありのペア差は、テーマ語出現率が+85ポイント（bootstrap 95%区間 +70〜+100）、平均テーマ語数が語尾操作なしで+3.05語（+2.05〜+4.15）でした。明瞭語による語彙制御は明確です。一方、事前定義した関連語への波及はテーマ条件5%、アンカーなし条件でも最大5%で、直接挿入していない意味語まで増える証拠は得られませんでした。
-
-テーマ語条件で語尾操作を有効にすると、フレーズ加重の語尾 `/a/` は14.4%から34.5%、`/a a/` は0.7%から8.4%へ増えました。decode単位のペア差はそれぞれ+9.6ポイント（-1.8〜+22.1）、+4.4ポイント（0.0〜+9.6）なので、語彙アンカーと押韻の同時制御は可能性があるものの、韻側は追加検証が必要です。
-
-## モデルサイズ比較
-
-保存済みのアンカー音声6条件を、`tiny`、`small`、`large-v3`へ同じ設定で渡します。入力音声を再合成せず、WAVのSHA-256、prompt、各sampleのseed、ライブラリversionを保存します。音声は上記のアンカー実験で生成した `none/neutral/theme_rhyme_off/on.wav` を使用します。
-
-```bash
-uv run python scripts/run_model_size_comparison.py \
-  --audio-dir generated_audio/lexical_anchor \
-  --output-dir results/model_size_n20 \
-  --models tiny small large-v3 \
-  --temperature 0.6 --n-samples 20 --seed 3579 \
-  --device cpu --threads 8
-
-uv run python scripts/summarize_model_comparison.py results/model_size_n20
-```
-
-同じコマンドへ `--resume` を加えると完了済みsampleを再計算せず再開します。音声、設定、ライブラリversionが変わっていれば再開を拒否します。既存結果は明示的な再開なしには上書きしません。
-
-同一音声のEncoder出力は1回計算して再利用し、Decoderはsampleごとにseedを設定します。モデルごとのMel bin数と特殊tokenに対応しています。`large-v3`は言語数が異なるため、比較実装ではtoken抑制リストもモデル自身のtokenizerから取得します。過去の実行結果とは混ぜず、3モデルを同じ実装・device・精度で再実行してください。
-
-`samples.jsonl`には全出力、`manifest.json`には入力条件、`analysis.json`にはモデル別・条件別の集計を保存します。表層的な日本語候補率、反復率、promptのコピー率、アンカー出現率、語尾母音率を確認できます。日本語候補の判定は意味の自然さを保証せず、文字の出現率はハルシネーションの正確な発生率ではありません。
-
-各条件20回、計360 decodeの[比較結果](reports/model-size-20261008.md)では、アンカーなしの平均文字数はtiny 45.8、small 53.7、large-v3 13.2でした。smallは母音操作への反応も大きい一方、強い反復は20%あり、出力量と文章の質は別に評価する必要があります。
-
-## 音声だけの誘導からdecoder文脈を追加する比較
-
-90 BPM・12秒の合成入力を使い、ビートのみ、CV追加、CVの末尾2モーラを
-`/a a/`へ変更、末尾を明瞭語「朝・花・山・坂」へ置換、decoder prompt追加、
-promptとprefix追加の6条件を比較します。明瞭語はフレーズ末尾に置き、4語とも
-母音が`/a a/`になる語を使います。4フレーズはそれぞれ1小節・12モーラ相当です。
-
-```bash
-uv run python scripts/synthesize_anchor_words.py \
-  --profile rhyme-final \
+# VOICEVOX ENGINEを127.0.0.1:50021で起動してから、明瞭語を一度だけ合成
+uv run --frozen python scripts/synthesize_anchor_words.py \
+  --profile rhyme-final --speaker 2 \
   --output-dir generated_audio/article_words \
   --manifest generated_audio/article_words/manifest.json
 
-uv run python scripts/run_article_experiment.py \
+# 基準 → 一部明瞭語 → 押韻文脈 → 冒頭明瞭語 → 記事用集計
+uv run --frozen python scripts/reproduce_article.py \
   --anchor-manifest generated_audio/article_words/manifest.json \
-  --output-dir results/article_experiment \
-  --model large-v3 --n-samples 20 --threads 8
+  --output-dir results/qiita
 ```
 
-音声合成にはローカルVOICEVOXを使います。既定の話者ID 2は
-VOICEVOX:四国めたん（ノーマル）です。音声を公開する際には利用規約に従ってください。
+既定値は記事と同じ`large-v3`・各20回です。関連する対照条件を含めて240 decodeを実行するため、まず`--model tiny --n-samples 1 --output-dir results/qiita_smoke`で接続・実行を確認できます。tinyの出力は記事の数値と比較できません。
 
-ビートと音声全体の正規化係数を条件間で共通にし、明瞭語の置換領域外の
-サンプルを保ちます。promptとprefixの比較には同じWAVを使います。
-各条件の乱数seedは対応させ、CPU・float32で推論します。
-CVの母音操作では`/a/`の位置と総量の両方が変わるため、位置だけの効果とは
-解釈できません。明瞭語の直接転写による語尾一致も、自由な押韻生成とは区別します。
+結果は`results/qiita/article_summary.md`と`article_summary.json`に出ます。記事の6条件の集計と共通seed 3585の生出力を確認できます。中断時は同じコマンドに`--resume`を付けます。明瞭語の合成はやり直さず、同じ音声と環境を使ってください。
 
-`manifest.json`にはWAV・音節イベント・明瞭語音源・実験ソースのハッシュ、
-decoder設定、ライブラリversionを保存します。各出力は`samples.jsonl`へ即時保存し、
-`summary.json`に条件別の集計と対応seedのbootstrap区間を保存します。
-中断後は同じコマンドに`--resume`を付けて再開します。入力、実験ソース、
-設定、環境が変わっていれば再開を拒否します。
+環境、記事とコードの対応、各段階のコマンド、再現できる範囲は[再現手順](docs/reproduction.md)にまとめています。
 
-各条件20回・計120回の[比較結果](reports/article-20261028.md)では、語尾母音への
-反応と明瞭語の認識が見られた一方、意味が通る押韻フレーズの安定した生成には
-至りませんでした。
+## ファイル構成
 
-### 2・4フレーズ目だけを明瞭語にする比較
+|場所|内容|
+|---|---|
+|[docs/reproduction.md](docs/reproduction.md)|記事の6条件、実行順、設定、結果の読み方|
+|[docs/experiments.md](docs/experiments.md)|母音・語彙アンカー・モデルサイズなど、その他の実験とCLIの詳細|
+|[scripts/](scripts/)|音声合成、実験実行、集計のCLI|
+|[src/whisper_rap/](src/whisper_rap/)|合成音声、Whisper decode、測定処理|
+|[prompts/](prompts/)|実験用のオリジナル文脈とprefix|
+|[reports/](reports/)|保存済みの実験結果の報告|
+|[tests/](tests/)|音声の条件間一致、測定、実行順などの検証|
 
-既存の全4フレーズを明瞭語にした音声と、語尾が`/a a/`のCV音声を凍結したまま、
-2・4フレーズ目だけを「花・坂」に置き換えた条件を追加できます。
-1・3フレーズ目と末尾の余白はCV音声と同じPCMサンプルを保ち、2・4フレーズ目は
-全4フレーズ条件から同じPCMサンプルを選びます。再合成・再正規化は行いません。
+生成音声、全出力JSONL、実行時manifest、モデル重みはGitに含めません。入力・設定・ソース・環境の記録は実行時の出力ディレクトリに保存します。
 
-```bash
-uv run python scripts/run_article_experiment.py \
-  --anchor-manifest generated_audio/article_words/manifest.json \
-  --frozen-baseline-dir results/article_experiment \
-  --output-dir results/article_partial \
-  --model large-v3 --n-samples 20 --threads 8
-```
+## 音声のクレジット
 
-文脈なし・prompt・prompt+prefixを各20回比較します。基準実験とモデル、入力WAV、
-推論コード、乱数seed、decoder設定、ライブラリ環境が対応していることを確認し、
-既存の音源と結果は変更しません。再開は同じコマンドに`--resume`を加えます。
-
-集計の`mora_counts`は認識テキストの読みを48個の入力CVと比較します。
-文字数とモーラ数、BGMの音楽的な拍数は区別してください。総モーラ数の一致だけでは、
-音源内の各発音時刻への追従は確認できません。
-
-追加実験とモーラ数の[比較結果](reports/partial-article-20261028.md)も参照してください。
-
-### 4フレーズの押韻文脈だけを与える比較
-
-各12モーラで語尾が`/a a/`になる4フレーズを、decoderの直前文脈に使えます。
-音声は凍結した2・4フレーズ明瞭語条件と同一で、prefixは与えません。
-
-```bash
-uv run python scripts/run_article_experiment.py \
-  --anchor-manifest generated_audio/article_words/manifest.json \
-  --frozen-baseline-dir results/article_experiment \
-  --rhyming-context-only \
-  --prompt-file prompts/rap_aa_four_phrases.txt \
-  --output-dir results/article_rhyming_context \
-  --model large-v3 --n-samples 20 --threads 8
-```
-
-このモードは4行すべてのモーラ数と語尾母音を確認し、変更したpromptと
-`prefix: null`をmanifestへ保存します。音声とサンプリング設定は基準実験に
-合わせ、文脈だけを変更します。旧文脈の出力とは別のディレクトリへ保存してください。
-
-各20回の[比較結果](reports/rhyming-context-20261028.md)では、4フレーズの押韻文脈を
-与えても自然なラップの安定した生成には至りませんでした。出力例の表示用の改行と、
-音声への時間的な対応は区別して扱います。
-
-### 明瞭語をフレーズ冒頭へ移す比較
-
-同じ「朝・花・山・坂」の録音を各フレーズの最初の2つのCV位置へ移し、
-末尾は曖昧CVの`/a a/`に戻せます。2・4フレーズだけと全4フレーズの2条件を、
-文脈・prefixなしで実行します。既存の末尾条件は再実行せず、対応するseedの
-凍結済み出力と比較します。
-
-```bash
-uv run python scripts/run_onset_experiment.py \
-  --baseline-dir results/article_experiment \
-  --partial-dir results/article_partial \
-  --anchor-manifest generated_audio/article_words/manifest.json \
-  --output-dir results/article_onset
-```
-
-元音源のPCM、明瞭語の録音、推論設定・環境・ソースの一致を確認してから実行します。
-明瞭語の声、音量、再生速度、共通の正規化係数を保ち、冒頭の置換範囲以外はCV音源と
-同じPCMにします。「坂」の短い末尾が次のCVと重なる場合は、そのCVを残して重ねます。
-重なる秒数はmanifestに記録します。`--resume`は入力とソースが同じ場合だけ許可します。
-出力の単語出現率は音声内の位置の一致を保証せず、総モーラ数や出力テキストの区切りも
-音楽的な拍への追従を保証しません。[実行結果](reports/onset-article-20261028.md)を参照してください。
-
-## 集計と可視化
-
-```bash
-uv run python scripts/summarize_results.py results/ \
-  --output results/summary.json \
-  --plot-dir results/plots
-```
-
-全体・condition別・temperature別に次を集計します。
-
-- 文字数、日本語文字率、empty/non-empty数
-- unique output率と頻出出力上位10件（重複数・率）
-- `pykakasi` による読み変換と `jamorasep` 基準のモーラ数
-- mora/sec、フレーズ別モーラ数、語尾1/2/3モーラ
-
-PNGにはcondition別平均文字数、日本語文字率、mora/sec、temperature別平均文字数とunique率を保存します。
-
-## 仮説の読み方
-
-1. AとCの平均文字数・non-empty率を比較し、疑似ボーカル追加で生成量が増えるかを見る。
-2. mora eventの密度やdurationを変え、出力モーラ数との対応を見る。
-3. CとDを同じ音声・seed・temperatureで比較し、promptによる語彙や行構造の変化を見る。
-4. temperature別unique率を比較し、多様性が増えるかを見る。
-
-出力モーラ数と入力event数の一致だけで音響的な追従とは断定できません。まず相関を探索し、その後はtoken timestampやforced alignmentを使う検証が必要です。
+明瞭語の合成音声：**VOICEVOX:四国めたん**（ノーマル、speaker ID 2）。音声を配布する場合は、[VOICEVOXの利用規約](https://voicevox.hiroshiba.jp/term/)と[四国めたんの利用規約](https://zunko.jp/con_ongen_kiyaku.html)を確認してください。依存ソフトウェアとモデルの利用条件は各配布元に従ってください。
 
 ## 開発時の確認
 
 ```bash
-uv run pytest
-uv run ruff check .
+uv run --frozen pytest
+uv run --frozen ruff check .
 ```
 
-既定値は [`configs/default.yaml`](configs/default.yaml) に一覧化しています。CLI引数が実行時の正本です。
+## ライセンス
+
+Copyright 2026 shimajiroxyz.
+
+本リポジトリのソースコードは[Apache License 2.0](LICENSE)で提供します。合成音声、外部ソフトウェア、モデル重みには各配布元の利用条件が適用されます。
