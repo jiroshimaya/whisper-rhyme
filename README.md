@@ -55,3 +55,9 @@ uv run --frozen python scripts/reproduce_article.py \
 uv run --frozen pytest
 uv run --frozen ruff check .
 ```
+
+## ライセンス
+
+Copyright 2026 shimajiroxyz.
+
+本リポジトリのソースコードは[Apache License 2.0](LICENSE)で提供します。合成音声、外部ソフトウェア、モデル重みには各配布元の利用条件が適用されます。
