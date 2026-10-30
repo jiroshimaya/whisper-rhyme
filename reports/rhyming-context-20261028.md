@@ -49,4 +49,4 @@ Jason 彼女は時々悪くなった
 
 ## 再現
 
-[README](../README.md)の`--rhyming-context-only`の手順を使う。入力・設定・文脈・ソース・環境のハッシュをmanifestへ保存し、旧文脈とは異なる出力ディレクトリで実行する。生成メディアと全出力はGitへ含めない。
+[記事の再現手順](../docs/reproduction.md)の`--rhyming-context-only`の手順を使う。入力・設定・文脈・ソース・環境のハッシュをmanifestへ保存し、旧文脈とは異なる出力ディレクトリで実行する。生成メディアと全出力はGitへ含めない。
